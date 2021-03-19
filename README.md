@@ -1,2 +1,2 @@
 # passive_balancer
-Simple balancer that doesn't make request on its own
+A simple balancer that doesn't make requests on its own
