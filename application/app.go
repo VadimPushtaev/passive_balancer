@@ -43,7 +43,6 @@ func (app App) SetSignalHandlers() {
 
 func (app App) waitSignal() {
 	for {
-		fmt.Printf("WAIT\n")
 		<-app.signalsChannel
 		if app.terminating {
 			// Signal repeated, shutting down immediately
