@@ -9,10 +9,9 @@ import (
 
 func main() {
 	balancerApp := application.NewApp()
-	balancerApp.SetSignalHandlers()
 
 	http.HandleFunc("/", balancerApp.RootHandlerFunc)
 	http.Handle("/metrics", promhttp.Handler())
 
-	balancerApp.Serve()
+	balancerApp.Run()
 }

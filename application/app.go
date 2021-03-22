@@ -23,25 +23,30 @@ type App struct {
 	finishOnce     *sync.Once
 }
 
-func NewApp() App {
+func NewApp() *App {
 	server := http.Server{Addr: ":8090"}
 
-	return App{
+	return &App{
 		messageChannel: make(chan []byte, 1024),
 		server:         &server,
 		signalsChannel: make(chan os.Signal),
-		doneChannel:    make(chan bool),
+		doneChannel:    make(chan bool, 1),
 		terminating:    false,
 		finishOnce:     &sync.Once{},
 	}
 }
 
-func (app App) SetSignalHandlers() {
-	signal.Notify(app.signalsChannel, syscall.SIGINT, syscall.SIGTERM)
+func (app *App) Run() {
+	app.SetSignalHandlers()
 	go app.waitSignal()
+	app.Serve()
 }
 
-func (app App) waitSignal() {
+func (app *App) SetSignalHandlers() {
+	signal.Notify(app.signalsChannel, syscall.SIGINT, syscall.SIGTERM)
+}
+
+func (app *App) waitSignal() {
 	for {
 		<-app.signalsChannel
 		if app.terminating {
@@ -50,25 +55,29 @@ func (app App) waitSignal() {
 			break
 		} else {
 			app.terminating = true
-			go app.finishGracefully()
+			go app.finishGracefully(time.Second, 10)
 		}
 	}
 }
 
-func (app App) finishGracefully() {
-	for i := 10; i > 0; i-- {
+// Returns the number of iterations (starting with 0)
+func (app *App) finishGracefully(timeout time.Duration, limit int) int {
+	i := 0
+	for ; i < limit || limit == 0; i++ {
 		messagesLeft := len(app.messageChannel)
 		if messagesLeft == 0 {
 			break
 		}
 		fmt.Printf("Terminating: %d more tries, %d more messages\n", i, messagesLeft)
-		time.Sleep(time.Second)
+		time.Sleep(timeout)
 	}
 
 	app.finishOnce.Do(app.finish)
+
+	return i
 }
 
-func (app App) finish() {
+func (app *App) finish() {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer func() {
 		cancel()
@@ -82,7 +91,7 @@ func (app App) finish() {
 	app.doneChannel <- true
 }
 
-func (app App) Serve() {
+func (app *App) Serve() {
 	err := app.server.ListenAndServe()
 	if err == http.ErrServerClosed {
 		<-app.doneChannel
@@ -91,7 +100,7 @@ func (app App) Serve() {
 	}
 }
 
-func (app App) RootHandlerFunc(w http.ResponseWriter, r *http.Request) {
+func (app *App) RootHandlerFunc(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		metrics.RPS.With(prometheus.Labels{"method": "GET"}).Inc()
 
