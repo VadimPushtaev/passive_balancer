@@ -84,12 +84,10 @@ func (app App) finish() {
 
 func (app App) Serve() {
 	err := app.server.ListenAndServe()
-	if err != nil {
-		if err != http.ErrServerClosed {
-			fmt.Printf("Failed to listen and serve: %s\n", err)
-		} else {
-			<-app.doneChannel
-		}
+	if err == http.ErrServerClosed {
+		<-app.doneChannel
+	} else {
+		fmt.Printf("Failed to listen and serve: %s\n", err)
 	}
 }
 
