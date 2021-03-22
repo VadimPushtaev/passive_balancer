@@ -24,7 +24,7 @@ type App struct {
 }
 
 func NewApp() *App {
-	server := http.Server{Addr: ":8090"}
+	server := http.Server{Addr: ":2308"}
 
 	return &App{
 		messageChannel: make(chan []byte, 1024),
