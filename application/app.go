@@ -120,8 +120,8 @@ func (app *App) RootHandlerFunc(w http.ResponseWriter, r *http.Request) {
 		if app.terminating {
 			http.Error(w, "Service is terminating", http.StatusInternalServerError)
 		} else {
+			defer r.Body.Close()
 			b, _ := ioutil.ReadAll(r.Body)
-			r.Body.Close()
 
 			select {
 			case app.messageChannel <- b:
