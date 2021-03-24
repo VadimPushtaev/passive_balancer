@@ -55,7 +55,7 @@ func (app *App) waitSignal() {
 			break
 		} else {
 			app.terminating = true
-			go app.finishGracefully(time.Second, 10)
+			go app.finishGracefully(time.Second, 5)
 		}
 	}
 }
@@ -68,7 +68,11 @@ func (app *App) finishGracefully(timeout time.Duration, limit int) int {
 		if messagesLeft == 0 {
 			break
 		}
-		fmt.Printf("Terminating: %d more tries, %d more messages\n", i, messagesLeft)
+		if limit > 0 {
+			fmt.Printf("Terminating: %d more tries, %d more messages\n", limit-i-1, messagesLeft)
+		} else {
+			fmt.Printf("Terminating: %d more messages\n", messagesLeft)
+		}
 		time.Sleep(timeout)
 	}
 
@@ -111,7 +115,7 @@ func (app *App) RootHandlerFunc(w http.ResponseWriter, r *http.Request) {
 				// TODO error metric
 			}
 		case <-time.After(2 * time.Second):
-			http.Error(w, "Timout exceeded", http.StatusInternalServerError)
+			http.Error(w, "Timeout exceeded", http.StatusInternalServerError)
 		}
 	}
 	if r.Method == http.MethodPost {
@@ -126,7 +130,7 @@ func (app *App) RootHandlerFunc(w http.ResponseWriter, r *http.Request) {
 			select {
 			case app.messageChannel <- b:
 			case <-time.After(2 * time.Second):
-				http.Error(w, "Timout exceeded", http.StatusInternalServerError)
+				http.Error(w, "Timeout exceeded", http.StatusInternalServerError)
 			}
 		}
 	}
