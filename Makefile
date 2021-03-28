@@ -12,3 +12,6 @@ docker-run: docker
 
 test-integration: docker
 	go test -v --tags integration  ./...
+
+release:
+	goreleaser release --rm-dist
