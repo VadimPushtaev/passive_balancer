@@ -13,4 +13,5 @@ require (
 	github.com/pborman/getopt/v2 v2.1.0
 	github.com/prometheus/client_golang v1.10.0
 	github.com/stretchr/testify v1.4.0
+	go.uber.org/zap v1.16.0
 )

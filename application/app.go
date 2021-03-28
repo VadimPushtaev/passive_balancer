@@ -3,8 +3,6 @@ package application
 import (
 	"context"
 	"fmt"
-	"github.com/VadimPushtaev/passive_balancer/metrics"
-	"github.com/prometheus/client_golang/prometheus"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -12,10 +10,16 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/VadimPushtaev/passive_balancer/metrics"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"go.uber.org/zap"
 )
 
 type App struct {
 	config         *AppConfiguration
+	logger         *zap.Logger
 	messageChannel chan []byte
 	server         *http.Server
 	signalsChannel chan os.Signal
@@ -25,12 +29,18 @@ type App struct {
 }
 
 func NewApp(configPath *string) *App {
+	logger, _ := zap.NewProduction()
+
 	config := NewConfig(configPath)
-	fmt.Printf("%+v\n", *config)
+	logger.Sugar().Infow(
+		"Configuration is set",
+		"config", config,
+	)
 	server := http.Server{Addr: fmt.Sprintf("%s:%s", config.Host, config.Port)}
 
 	return &App{
 		config:         config,
+		logger:         logger,
 		messageChannel: make(chan []byte, config.QueueSize),
 		server:         &server,
 		signalsChannel: make(chan os.Signal),
@@ -45,9 +55,13 @@ func NewAppWithoutConfigFile() *App {
 }
 
 func (app *App) Run() {
+	app.logger.Sugar().Info("Run is started")
+
 	app.SetSignalHandlers()
 	go app.waitSignal()
 	app.Serve()
+
+	app.logger.Sugar().Info("Run is finished")
 }
 
 func (app *App) SetSignalHandlers() {
@@ -56,12 +70,19 @@ func (app *App) SetSignalHandlers() {
 
 func (app *App) waitSignal() {
 	for {
-		<-app.signalsChannel
+		receivedSignal := <-app.signalsChannel
 		if app.terminating {
-			// Signal repeated, shutting down immediately
+			app.logger.Sugar().Warnw(
+				"Signal received again, shutting down immediately",
+				"signal", receivedSignal,
+			)
 			app.finishOnce.Do(app.finish)
 			break
 		} else {
+			app.logger.Sugar().Warnw(
+				"Signal received, terminating now",
+				"signal", receivedSignal,
+			)
 			app.terminating = true
 			go app.finishGracefully(time.Second, app.config.GracefulPeriodSeconds)
 		}
@@ -77,9 +98,12 @@ func (app *App) finishGracefully(timeout time.Duration, limit int) int {
 			break
 		}
 		if limit > 0 {
-			fmt.Printf("Terminating: %d more tries, %d more messages\n", limit-i-1, messagesLeft)
+			app.logger.Sugar().Warnf(
+				"Terminating: %d more tries, %d more messages\n",
+				limit-i-1, messagesLeft,
+			)
 		} else {
-			fmt.Printf("Terminating: %d more messages\n", messagesLeft)
+			app.logger.Sugar().Warnf("Terminating: %d more messages\n", messagesLeft)
 		}
 		time.Sleep(timeout)
 	}
@@ -90,6 +114,8 @@ func (app *App) finishGracefully(timeout time.Duration, limit int) int {
 }
 
 func (app *App) finish() {
+	app.logger.Sugar().Warn("Shutting down now")
+
 	ctx, cancel := context.WithTimeout(
 		context.Background(),
 		time.Duration(app.config.ShutdownTimeoutSeconds)*time.Second,
@@ -100,7 +126,7 @@ func (app *App) finish() {
 
 	err := app.server.Shutdown(ctx)
 	if err != nil {
-		fmt.Printf("Failed to shut down: %s\n", err)
+		app.logger.Sugar().Errorf("Failed to shut down: %s\n", err)
 	}
 
 	app.doneChannel <- true
@@ -111,7 +137,7 @@ func (app *App) Serve() {
 	if err == http.ErrServerClosed {
 		<-app.doneChannel
 	} else {
-		fmt.Printf("Failed to listen and serve: %s\n", err)
+		app.logger.Sugar().Errorf("Failed to listen and serve: %s\n", err)
 	}
 }
 
@@ -120,26 +146,38 @@ func (app *App) GetHandlerFunc(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 	}
 
-	metrics.RPS.With(prometheus.Labels{"method": "GET"}).Inc()
+	metrics.RequestsTotal.With(prometheus.Labels{"method": "GET"}).Inc()
 
+	timed_out := false
 	select {
 	case b := <-app.messageChannel:
 		_, err := fmt.Fprintf(w, "%s\n", b)
 		if err != nil {
-			// TODO error metric
+			app.logger.Warn("Failed to send data to a client")
 		}
 	case <-time.After(time.Duration(app.config.GetTimeoutSeconds) * time.Second):
+		timed_out = true
 		http.Error(w, "Timeout exceeded", http.StatusInternalServerError)
+		metrics.TimeoutsTotal.With(prometheus.Labels{"method": "GET"}).Inc()
 	}
+
+	app.logger.Info(
+		"HTTP request is served",
+		zap.String("request", "get"),
+		zap.Bool("timed_out", timed_out),
+	)
 }
 func (app *App) PostHandlerFunc(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 	}
 
-	metrics.RPS.With(prometheus.Labels{"method": "POST"}).Inc()
+	metrics.RequestsTotal.With(prometheus.Labels{"method": "POST"}).Inc()
 
+	denied := false
+	timedOut := false
 	if app.terminating {
+		denied = true
 		http.Error(w, "Service is terminating", http.StatusInternalServerError)
 	} else {
 		defer r.Body.Close()
@@ -148,7 +186,15 @@ func (app *App) PostHandlerFunc(w http.ResponseWriter, r *http.Request) {
 		select {
 		case app.messageChannel <- b:
 		case <-time.After(time.Duration(app.config.PostTimeoutSeconds) * time.Second):
+			timedOut = true
 			http.Error(w, "Timeout exceeded", http.StatusInternalServerError)
 		}
 	}
+
+	app.logger.Info(
+		"HTTP request is served",
+		zap.String("request", "post"),
+		zap.Bool("timedOut", timedOut),
+		zap.Bool("denied", denied),
+	)
 }
