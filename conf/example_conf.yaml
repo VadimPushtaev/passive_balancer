@@ -1,0 +1,7 @@
+host: 0.0.0.0
+port: 8090
+queue_size: 10
+graceful_period_seconds: 10
+shutdown_timeout_seconds: 5
+get_timeout_seconds: 2
+post_timeout_seconds: 2

@@ -7,8 +7,8 @@ import (
 
 var RPS = promauto.NewCounterVec(
 	prometheus.CounterOpts{
-		Name: "passive_balancer_rps_total",
-		Help: "The total number of requests per second",
+		Name: "passive_balancer_requests_total",
+		Help: "The total number of requests",
 	},
 	[]string{"method"},
 )

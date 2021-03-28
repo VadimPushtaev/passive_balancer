@@ -15,6 +15,7 @@ import (
 )
 
 type App struct {
+	config         *AppConfiguration
 	messageChannel chan []byte
 	server         *http.Server
 	signalsChannel chan os.Signal
@@ -23,17 +24,24 @@ type App struct {
 	finishOnce     *sync.Once
 }
 
-func NewApp() *App {
-	server := http.Server{Addr: ":2308"}
+func NewApp(configPath *string) *App {
+	config := NewConfig(configPath)
+	fmt.Printf("%+v\n", *config)
+	server := http.Server{Addr: fmt.Sprintf("%s:%s", config.Host, config.Port)}
 
 	return &App{
-		messageChannel: make(chan []byte, 1024),
+		config:         config,
+		messageChannel: make(chan []byte, config.QueueSize),
 		server:         &server,
 		signalsChannel: make(chan os.Signal),
 		doneChannel:    make(chan bool, 1),
 		terminating:    false,
 		finishOnce:     &sync.Once{},
 	}
+}
+
+func NewAppWithoutConfigFile() *App {
+	return NewApp(nil)
 }
 
 func (app *App) Run() {
@@ -55,7 +63,7 @@ func (app *App) waitSignal() {
 			break
 		} else {
 			app.terminating = true
-			go app.finishGracefully(time.Second, 5)
+			go app.finishGracefully(time.Second, app.config.GracefulPeriodSeconds)
 		}
 	}
 }
@@ -82,7 +90,10 @@ func (app *App) finishGracefully(timeout time.Duration, limit int) int {
 }
 
 func (app *App) finish() {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		time.Duration(app.config.ShutdownTimeoutSeconds)*time.Second,
+	)
 	defer func() {
 		cancel()
 	}()
@@ -104,34 +115,40 @@ func (app *App) Serve() {
 	}
 }
 
-func (app *App) RootHandlerFunc(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		metrics.RPS.With(prometheus.Labels{"method": "GET"}).Inc()
+func (app *App) GetHandlerFunc(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	}
+
+	metrics.RPS.With(prometheus.Labels{"method": "GET"}).Inc()
+
+	select {
+	case b := <-app.messageChannel:
+		_, err := fmt.Fprintf(w, "%s\n", b)
+		if err != nil {
+			// TODO error metric
+		}
+	case <-time.After(time.Duration(app.config.GetTimeoutSeconds) * time.Second):
+		http.Error(w, "Timeout exceeded", http.StatusInternalServerError)
+	}
+}
+func (app *App) PostHandlerFunc(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	}
+
+	metrics.RPS.With(prometheus.Labels{"method": "POST"}).Inc()
+
+	if app.terminating {
+		http.Error(w, "Service is terminating", http.StatusInternalServerError)
+	} else {
+		defer r.Body.Close()
+		b, _ := ioutil.ReadAll(r.Body)
 
 		select {
-		case b := <-app.messageChannel:
-			_, err := fmt.Fprintf(w, "%s\n", b)
-			if err != nil {
-				// TODO error metric
-			}
-		case <-time.After(2 * time.Second):
+		case app.messageChannel <- b:
+		case <-time.After(time.Duration(app.config.PostTimeoutSeconds) * time.Second):
 			http.Error(w, "Timeout exceeded", http.StatusInternalServerError)
-		}
-	}
-	if r.Method == http.MethodPost {
-		metrics.RPS.With(prometheus.Labels{"method": "POST"}).Inc()
-
-		if app.terminating {
-			http.Error(w, "Service is terminating", http.StatusInternalServerError)
-		} else {
-			defer r.Body.Close()
-			b, _ := ioutil.ReadAll(r.Body)
-
-			select {
-			case app.messageChannel <- b:
-			case <-time.After(2 * time.Second):
-				http.Error(w, "Timeout exceeded", http.StatusInternalServerError)
-			}
 		}
 	}
 }

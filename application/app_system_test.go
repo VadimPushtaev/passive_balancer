@@ -26,27 +26,34 @@ func TestDockerMain(t *testing.T) {
 	CaseGetBeforePost(t)
 	CasePostBeforeGet(t)
 	CaseGetTimeout(t)
-	CaseServiceTerminating(t, container)
+	CaseGracefulShutdown(t, container)
 }
 
 func TestDockerDoubleTerm(t *testing.T) {
 	container := runContainer(t)
 	defer removeContainer(t, container)
 
-	CaseServiceDoubleTerminating(t, container)
+	CaseForceShutdown(t, container)
+}
+
+func TestDockerGracefulShutdownFullQueue(t *testing.T) {
+	container := runContainerCustom(t, []string{"PB_GRACEFUL_PERIOD_SECONDS=1"})
+	defer removeContainer(t, container)
+
+	CaseGracefulShutdownFullQueue(t, container)
 }
 
 func CaseGetBeforePost(t *testing.T) {
 	getDone := make(chan bool)
 	go func() {
-		resp, err := http.Get("http://localhost:2308/")
+		resp, err := http.Get("http://localhost:2308/get")
 		assert.Nil(t, err)
 		if err == nil {
 			assert.Equal(t, 200, resp.StatusCode)
 		}
 		getDone <- true
 	}()
-	resp, err := http.Post("http://localhost:2308/", "text/plain", nil)
+	resp, err := http.Post("http://localhost:2308/post", "text/plain", nil)
 	assert.Nil(t, err)
 	if err == nil {
 		assert.Equal(t, 200, resp.StatusCode)
@@ -60,13 +67,13 @@ func CaseGetBeforePost(t *testing.T) {
 }
 
 func CasePostBeforeGet(t *testing.T) {
-	resp, err := http.Post("http://localhost:2308/", "text/plain", bytes.NewReader([]byte("FOOBAR")))
+	resp, err := http.Post("http://localhost:2308/post", "text/plain", bytes.NewReader([]byte("FOOBAR")))
 	assert.Nil(t, err)
 	if err == nil {
 		assert.Equal(t, 200, resp.StatusCode)
 	}
 
-	resp, err = http.Get("http://localhost:2308/")
+	resp, err = http.Get("http://localhost:2308/get")
 	assert.Nil(t, err)
 	if err == nil {
 		assert.Equal(t, 200, resp.StatusCode)
@@ -77,7 +84,7 @@ func CasePostBeforeGet(t *testing.T) {
 }
 
 func CaseGetTimeout(t *testing.T) {
-	resp, err := http.Get("http://localhost:2308/")
+	resp, err := http.Get("http://localhost:2308/get")
 
 	assert.Nil(t, err)
 	if err == nil {
@@ -94,8 +101,8 @@ func CaseGetTimeout(t *testing.T) {
 // * we cannot POST while the service is terminating
 // * we can GET while the service is terminating and the queue is not empty
 // * the service is terminated as soon as the queue is empty
-func CaseServiceTerminating(t *testing.T, container *dockerContainer.ContainerCreateCreatedBody) {
-	resp, err := http.Post("http://localhost:2308/", "text/plain", nil)
+func CaseGracefulShutdown(t *testing.T, container *dockerContainer.ContainerCreateCreatedBody) {
+	resp, err := http.Post("http://localhost:2308/post", "text/plain", nil)
 	assert.Nil(t, err)
 	if err == nil {
 		assert.Equal(t, 200, resp.StatusCode)
@@ -103,13 +110,13 @@ func CaseServiceTerminating(t *testing.T, container *dockerContainer.ContainerCr
 
 	termContainer(t, container)
 
-	resp, err = http.Post("http://localhost:2308/", "text/plain", nil)
+	resp, err = http.Post("http://localhost:2308/post", "text/plain", nil)
 	assert.Nil(t, err)
 	if err == nil {
 		assert.Equal(t, 500, resp.StatusCode)
 	}
 
-	resp, err = http.Get("http://localhost:2308/")
+	resp, err = http.Get("http://localhost:2308/get")
 	assert.Nil(t, err)
 	if err == nil {
 		assert.Equal(t, 200, resp.StatusCode)
@@ -120,9 +127,23 @@ func CaseServiceTerminating(t *testing.T, container *dockerContainer.ContainerCr
 
 // The goal of this case is to test that
 // * we can POST while the service is running
+// * if TERM sent, the service is terminated as soon as time is out even though the queue is NOT empty
+func CaseGracefulShutdownFullQueue(t *testing.T, container *dockerContainer.ContainerCreateCreatedBody) {
+	resp, err := http.Post("http://localhost:2308/post", "text/plain", nil)
+	assert.Nil(t, err)
+	if err == nil {
+		assert.Equal(t, 200, resp.StatusCode)
+	}
+
+	termContainer(t, container)
+	checkContainer(t, container, false, 5)
+}
+
+// The goal of this case is to test that
+// * we can POST while the service is running
 // * the service is terminated upon receiving the second SIGTERM even though the queue is NOT empty
-func CaseServiceDoubleTerminating(t *testing.T, container *dockerContainer.ContainerCreateCreatedBody) {
-	resp, err := http.Post("http://localhost:2308/", "text/plain", nil)
+func CaseForceShutdown(t *testing.T, container *dockerContainer.ContainerCreateCreatedBody) {
+	resp, err := http.Post("http://localhost:2308/post", "text/plain", nil)
 	assert.Nil(t, err)
 	if err == nil {
 		assert.Equal(t, 200, resp.StatusCode)
@@ -135,6 +156,10 @@ func CaseServiceDoubleTerminating(t *testing.T, container *dockerContainer.Conta
 }
 
 func runContainer(t *testing.T) *dockerContainer.ContainerCreateCreatedBody {
+	return runContainerCustom(t, []string{})
+}
+
+func runContainerCustom(t *testing.T, envConfig []string) *dockerContainer.ContainerCreateCreatedBody {
 	client, err := dockerClient.NewEnvClient()
 	if err != nil {
 		t.Fatalf("Cannot connect to Docker daemon: %s", err)
@@ -145,11 +170,13 @@ func runContainer(t *testing.T) *dockerContainer.ContainerCreateCreatedBody {
 		cancel()
 	}()
 
+	env := append([]string{"PB_HOST=0.0.0.0"}, envConfig...)
 	container, err := client.ContainerCreate(
 		ctx,
 		&dockerContainer.Config{
 			Image:        "passive_balancer",
 			ExposedPorts: nat.PortSet{"2308": {}},
+			Env:          env,
 		},
 		&dockerContainer.HostConfig{PortBindings: nat.PortMap{
 			"2308": {{HostPort: "2308"}},

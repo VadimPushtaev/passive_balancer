@@ -10,11 +10,11 @@ import (
 )
 
 func TestNewApp(t *testing.T) {
-	NewApp()
+	NewAppWithoutConfigFile()
 }
 
 func TestSetSignalHandlers(t *testing.T) {
-	app := NewApp()
+	app := NewAppWithoutConfigFile()
 	defer signal.Reset()
 	app.SetSignalHandlers()
 
@@ -31,7 +31,7 @@ func TestSetSignalHandlers(t *testing.T) {
 }
 
 func TestWaitSignal(t *testing.T) {
-	app := NewApp()
+	app := NewAppWithoutConfigFile()
 	finished := make(chan bool)
 
 	go func() {
@@ -57,7 +57,7 @@ func TestWaitSignal(t *testing.T) {
 }
 
 func TestFinishGracefully(t *testing.T) {
-	app := NewApp()
+	app := NewAppWithoutConfigFile()
 	assert.Equal(
 		t,
 		0,
@@ -74,7 +74,7 @@ func TestFinishGracefully(t *testing.T) {
 }
 
 func TestFinish(t *testing.T) {
-	app := NewApp()
+	app := NewAppWithoutConfigFile()
 	app.finish()
 
 	select {
