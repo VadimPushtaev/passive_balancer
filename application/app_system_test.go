@@ -228,6 +228,11 @@ func removeContainer(t *testing.T, container *dockerContainer.ContainerCreateCre
 
 	err = client.ContainerStop(ctx, container.ID, nil)
 	if err != nil {
+		t.Fatalf("cannot stop Docker container: %s", err)
+	}
+
+	err = client.ContainerRemove(ctx, container.ID, dockerTypes.ContainerRemoveOptions{})
+	if err != nil {
 		t.Fatalf("cannot remove Docker container: %s", err)
 	}
 }
@@ -271,4 +276,37 @@ func checkContainer(
 	}
 
 	assert.Equal(t, expectedNumberOfContainers, actualNumberOfContainers)
+}
+
+func TestLatency(t *testing.T) {
+	container := runContainer(t)
+	defer removeContainer(t, container)
+
+	iterations := 1000
+	tr := &http.Transport{}
+	client := &http.Client{Transport: tr}
+
+	var times []int64
+	for i := 0; i < iterations; i++ {
+		times = append(times, time.Now().UnixNano())
+		_, err := client.Post("http://localhost:2308/post", "text/plain", bytes.NewReader([]byte("FOOBAR")))
+		assert.Nil(t, err)
+		_, err = client.Get("http://localhost:2308/get")
+		assert.Nil(t, err)
+	}
+
+	var diffs []int
+	diffsSum := 0
+	for i := 0; i < len(times)-1; i++ {
+		diff := int(times[i+1] - times[i])
+		diffs = append(diffs, diff)
+		diffsSum += diff
+
+	}
+
+	avgLatency := diffsSum / len(diffs)
+	t.Logf("Average latency is %dns\n", avgLatency)
+
+	// Assert latency <= 2ms
+	assert.LessOrEqual(t, avgLatency, 2*1000*1000)
 }
