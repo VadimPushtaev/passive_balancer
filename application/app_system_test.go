@@ -5,6 +5,7 @@ package application
 import (
 	"bytes"
 	"context"
+	"github.com/docker/go-units"
 	"io/ioutil"
 	"net/http"
 	"testing"
@@ -178,9 +179,14 @@ func runContainerCustom(t *testing.T, envConfig []string) *dockerContainer.Conta
 			ExposedPorts: nat.PortSet{"2308": {}},
 			Env:          env,
 		},
-		&dockerContainer.HostConfig{PortBindings: nat.PortMap{
-			"2308": {{HostPort: "2308"}},
-		}},
+		&dockerContainer.HostConfig{
+			PortBindings: nat.PortMap{
+				"2308": {{HostPort: "2308"}},
+			},
+			Resources: dockerContainer.Resources{
+				Ulimits: []*units.Ulimit{{"nofile", 65535, 65535}},
+			},
+		},
 		&dockerNetwork.NetworkingConfig{},
 		"",
 	)
@@ -279,6 +285,11 @@ func checkContainer(
 }
 
 func TestLatency(t *testing.T) {
+	/*
+		Make sure you have enough limits to run this.
+		This may help:
+			ulimit -S -n $(ulimit -H -n)
+	*/
 	container := runContainer(t)
 	defer removeContainer(t, container)
 

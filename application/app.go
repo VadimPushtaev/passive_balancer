@@ -148,7 +148,7 @@ func (app *App) GetHandlerFunc(w http.ResponseWriter, r *http.Request) {
 
 	metrics.RequestsTotal.With(prometheus.Labels{"method": "GET"}).Inc()
 
-	timed_out := false
+	timedOut := false
 	select {
 	case b := <-app.messageChannel:
 		_, err := fmt.Fprintf(w, "%s\n", b)
@@ -156,7 +156,7 @@ func (app *App) GetHandlerFunc(w http.ResponseWriter, r *http.Request) {
 			app.logger.Warn("Failed to send data to a client")
 		}
 	case <-time.After(time.Duration(app.config.GetTimeoutSeconds) * time.Second):
-		timed_out = true
+		timedOut = true
 		http.Error(w, "Timeout exceeded", http.StatusInternalServerError)
 		metrics.TimeoutsTotal.With(prometheus.Labels{"method": "GET"}).Inc()
 	}
@@ -164,7 +164,7 @@ func (app *App) GetHandlerFunc(w http.ResponseWriter, r *http.Request) {
 	app.logger.Info(
 		"HTTP request is served",
 		zap.String("request", "get"),
-		zap.Bool("timed_out", timed_out),
+		zap.Bool("timed_out", timedOut),
 	)
 }
 func (app *App) PostHandlerFunc(w http.ResponseWriter, r *http.Request) {
