@@ -7,7 +7,7 @@ docker: passive_balancer
 
 .PHONY: docker-run
 docker-run: docker
-	docker run -it -p 2308:2308 passive_balancer
+	docker run --env PB_HOST=0.0.0.0 -it -p 2308:2308 passive_balancer
 
 
 test-integration: docker
