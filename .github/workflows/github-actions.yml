@@ -7,4 +7,4 @@ jobs:
       - name: Check out repository code
         uses: actions/checkout@v3
       - run: make
-      - run: test-integration
+      - run: make test-integration
