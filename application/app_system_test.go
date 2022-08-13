@@ -26,11 +26,12 @@ func TestDockerMain(t *testing.T) {
 
 	CaseGetBeforePost(t)
 	CasePostBeforeGet(t)
+	CasePostWithCallback(t)
 	CaseGetTimeout(t)
 	CaseGracefulShutdown(t, container)
 }
 
-func TestDockerDoubleTerm(t *testing.T) {
+func TestDockerForceShutdown(t *testing.T) {
 	container := runContainer(t)
 	defer removeContainer(t, container)
 
@@ -81,6 +82,34 @@ func CasePostBeforeGet(t *testing.T) {
 		defer resp.Body.Close()
 		b, _ := ioutil.ReadAll(resp.Body)
 		assert.Equal(t, []byte("FOOBAR\n"), b)
+	}
+}
+
+func CasePostWithCallback(t *testing.T) {
+	getDone := make(chan bool)
+	go func() {
+		resp, err := http.Post(
+			"http://localhost:2308/post_with_callback", "text/plain", bytes.NewReader([]byte("FOOBAR")),
+		)
+		assert.Nil(t, err)
+		if err == nil {
+			assert.Equal(t, 200, resp.StatusCode)
+			defer resp.Body.Close()
+			b, _ := ioutil.ReadAll(resp.Body)
+			assert.Equal(t, []byte("CALLBACK\n"), b)
+		}
+		getDone <- true
+	}()
+	resp, err := http.Get("http://localhost:2308/get?body=CALLBACK")
+	assert.Nil(t, err)
+	if err == nil {
+		assert.Equal(t, 200, resp.StatusCode)
+	}
+
+	select {
+	case <-getDone:
+	case <-time.After(time.Second):
+		t.Error("POST is stuck")
 	}
 }
 
@@ -199,7 +228,7 @@ func runContainerCustom(t *testing.T, envConfig []string) *dockerContainer.Conta
 		t.Fatalf("Cannot start Docker container: %s", err)
 	}
 
-	checkContainer(t, &container, true, 0)
+	checkContainer(t, &container, true, 5)
 
 	return &container
 }
@@ -279,6 +308,19 @@ func checkContainer(
 		}
 
 		time.Sleep(time.Second)
+	}
+
+	if running {
+		// Now wait for software to start
+		_, err = http.Get("http://localhost:2308/metrics")
+		i := 0
+		if err != nil {
+			if i >= retries {
+				t.Fatalf("Cannot connect to service (%d retries): %s", retries, err)
+			}
+			i += 1
+			time.Sleep(time.Second)
+		}
 	}
 
 	assert.Equal(t, expectedNumberOfContainers, actualNumberOfContainers)

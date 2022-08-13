@@ -10,7 +10,7 @@ var RequestsTotal = promauto.NewCounterVec(
 		Name: "passive_balancer_requests_total",
 		Help: "The total number of requests",
 	},
-	[]string{"method"},
+	[]string{"location"},
 )
 
 var TimeoutsTotal = promauto.NewCounterVec(
@@ -18,5 +18,5 @@ var TimeoutsTotal = promauto.NewCounterVec(
 		Name: "passive_balancer_timeouts_total",
 		Help: "The total number of timeouts",
 	},
-	[]string{"method"},
+	[]string{"location"},
 )

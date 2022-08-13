@@ -17,10 +17,20 @@ import (
 	"go.uber.org/zap"
 )
 
+type CallbackMessage struct {
+	bytes []byte
+}
+
+type Message struct {
+	bytes           []byte
+	callbackEnabled bool
+	callbackChannel chan CallbackMessage
+}
+
 type App struct {
 	config         *AppConfiguration
 	logger         *zap.Logger
-	messageChannel chan []byte
+	messageChannel chan Message
 	server         *http.Server
 	signalsChannel chan os.Signal
 	doneChannel    chan bool
@@ -41,7 +51,7 @@ func NewApp(configPath *string) *App {
 	return &App{
 		config:         config,
 		logger:         logger,
-		messageChannel: make(chan []byte, config.QueueSize),
+		messageChannel: make(chan Message, config.QueueSize),
 		server:         &server,
 		signalsChannel: make(chan os.Signal),
 		doneChannel:    make(chan bool, 1),
@@ -146,19 +156,27 @@ func (app *App) GetHandlerFunc(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 	}
 
-	metrics.RequestsTotal.With(prometheus.Labels{"method": "GET"}).Inc()
+	metrics.RequestsTotal.With(prometheus.Labels{"location": "get"}).Inc()
 
 	timedOut := false
 	select {
-	case b := <-app.messageChannel:
-		_, err := fmt.Fprintf(w, "%s\n", b)
+	case m := <-app.messageChannel:
+		if m.callbackEnabled {
+			bodies := r.URL.Query()["body"]
+			body := ""
+			if len(bodies) > 0 {
+				body = bodies[len(bodies)-1]
+			}
+			m.callbackChannel <- CallbackMessage{[]byte(body)}
+		}
+		_, err := fmt.Fprintf(w, "%s\n", m.bytes)
 		if err != nil {
 			app.logger.Warn("Failed to send data to a client")
 		}
 	case <-time.After(time.Duration(app.config.GetTimeoutSeconds) * time.Second):
 		timedOut = true
 		http.Error(w, "Timeout exceeded", http.StatusInternalServerError)
-		metrics.TimeoutsTotal.With(prometheus.Labels{"method": "GET"}).Inc()
+		metrics.TimeoutsTotal.With(prometheus.Labels{"location": "get"}).Inc()
 	}
 
 	app.logger.Info(
@@ -172,7 +190,7 @@ func (app *App) PostHandlerFunc(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 	}
 
-	metrics.RequestsTotal.With(prometheus.Labels{"method": "POST"}).Inc()
+	metrics.RequestsTotal.With(prometheus.Labels{"location": "post"}).Inc()
 
 	denied := false
 	timedOut := false
@@ -183,11 +201,61 @@ func (app *App) PostHandlerFunc(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
 		b, _ := ioutil.ReadAll(r.Body)
 
+		message := Message{
+			b,
+			false,
+			nil,
+		}
+
 		select {
-		case app.messageChannel <- b:
+		case app.messageChannel <- message:
 		case <-time.After(time.Duration(app.config.PostTimeoutSeconds) * time.Second):
 			timedOut = true
 			http.Error(w, "Timeout exceeded", http.StatusInternalServerError)
+		}
+	}
+
+	app.logger.Info(
+		"HTTP request is served",
+		zap.String("request", "post"),
+		zap.Bool("timedOut", timedOut),
+		zap.Bool("denied", denied),
+	)
+}
+
+func (app *App) PostWithCallbackHandlerFunc(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	}
+
+	metrics.RequestsTotal.With(prometheus.Labels{"location": "post_with_callback"}).Inc()
+
+	denied := false
+	timedOut := false
+	if app.terminating {
+		denied = true
+		http.Error(w, "Service is terminating", http.StatusInternalServerError)
+	} else {
+		defer r.Body.Close()
+		b, _ := ioutil.ReadAll(r.Body)
+
+		message := Message{
+			b,
+			true,
+			make(chan CallbackMessage, 1),
+		}
+
+		select {
+		case app.messageChannel <- message:
+		case <-time.After(time.Duration(app.config.PostTimeoutSeconds) * time.Second):
+			timedOut = true
+			http.Error(w, "Timeout exceeded", http.StatusInternalServerError)
+		}
+
+		callbackMessage := <-message.callbackChannel
+		_, err := fmt.Fprintf(w, "%s\n", callbackMessage.bytes)
+		if err != nil {
+			app.logger.Warn("Failed to send data to a client")
 		}
 	}
 
