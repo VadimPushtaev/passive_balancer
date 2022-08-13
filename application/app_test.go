@@ -64,7 +64,7 @@ func TestFinishGracefully(t *testing.T) {
 		app.finishGracefully(0, 0),
 	)
 
-	app.messageChannel <- []byte("")
+	app.messageChannel <- Message{[]byte(""), false, nil}
 	assert.Equal(
 		t,
 		7,

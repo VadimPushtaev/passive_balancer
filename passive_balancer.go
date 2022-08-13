@@ -14,6 +14,7 @@ func main() {
 
 	http.HandleFunc("/get", balancerApp.GetHandlerFunc)
 	http.HandleFunc("/post", balancerApp.PostHandlerFunc)
+	http.HandleFunc("/post_with_callback", balancerApp.PostWithCallbackHandlerFunc)
 	http.Handle("/metrics", promhttp.Handler())
 
 	balancerApp.Run()
